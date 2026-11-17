@@ -1,0 +1,43 @@
+[Unit]
+# QQBot Bridge：把手机 QQ 单聊接到本机 CodeBuddy。
+# 以当前用户身份运行，配置和日志都在 ~/.qqbot_bridge 下。
+#
+# 安装（推荐）：
+#   ./scripts/install.sh --service
+# 手动等价于：
+#   make install && mkdir -p ~/.config/systemd/user
+#   cp deploy/qqbot_bridge.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload && systemctl --user enable --now qqbot_bridge
+#
+# 让服务在未登录时也常驻（可选）：
+#   sudo loginctl enable-linger $USER
+Description=QQBot Bridge (QQ 单聊 -> CodeBuddy)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# 注意：这里必须加 -f。程序默认自己后台化，交给 systemd 托管时会误判进程已退出。
+ExecStart=%h/.local/bin/qqbot_bridge -f
+WorkingDirectory=%h
+Restart=on-failure
+RestartSec=5s
+
+# 配置里的 secret 只有本用户能读，因此不要用 root 跑
+Environment=HOME=%h
+# 用 Cursor（agent.driver: cursor）时，登录态的两种给法二选一：
+#   1) 先用本用户执行 cursor-agent login（登录态在 ~/.cursor 下，systemd 能看到）；
+#   2) 用 API Key。建议写进只有本用户可读的文件（chmod 600），不要直接写在 unit 里：
+# EnvironmentFile=%h/.qqbot_bridge/cursor.env   # 文件内容：CURSOR_API_KEY=xxx
+# 换 driver 时记得同时确认下面 PATH 里的目录能找得到 cursor-agent（默认在 %h/.local/bin）。
+# systemd 默认 PATH 不含 ~/.local/bin、Go 和 qqep 等用户目录；
+# 不补的话桥接会报 "codebuddy: executable file not found in $PATH"。
+Environment="PATH=%h/background_agent_cli/bin:%h/.devflow/bin:%h/.galileo/bin:%h/.local/bin:%h/bin:/usr/local/bin:/usr/bin:/usr/local/sbin:/usr/sbin:%h/.ft:/usr/local/go/bin:%h/go/bin:%h/.rainbow-cli/bin"
+
+# 日志本身也会按天写到 ~/.qqbot_bridge/logs，这里同时留给 journald 一份
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=qqbot_bridge
+
+[Install]
+WantedBy=default.target

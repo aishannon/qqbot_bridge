@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>QQBot Bridge 管理端</title>
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header>
+  <img class="logo" src="/favicon.svg" alt="">
+  <h1>QQBot Bridge</h1>
+  <span id="gw" class="badge">连接中…</span>
+  <span id="appid" class="badge dim">未绑定</span>
+  <span class="spacer"></span>
+  <span id="clock" class="dim mono"></span>
+  <button id="logout" class="ghost small" type="button">退出登录</button>
+</header>
+<nav class="tabs" id="tabs">
+  <a data-tab="overview">概览</a>
+  <a data-tab="messages">收到的消息</a>
+  <a data-tab="whitelist">白名单</a>
+  <a data-tab="sessions">会话</a>
+</nav>
+<main>
+  <section id="tab-overview" hidden>
+    <div class="grid2">
+      <div>
+        <div class="card"><h2>绑定</h2><div id="bind"><span class="empty">加载中…</span></div></div>
+        <div class="card"><h2>当前会话</h2><div id="cur"><span class="empty">加载中…</span></div></div>
+      </div>
+      <div>
+        <div class="card"><h2>当前任务</h2><div id="task"><span class="empty">空闲</span></div></div>
+        <div class="card"><h2>运行日志</h2><div id="logs"></div></div>
+      </div>
+    </div>
+  </section>
+
+  <section id="tab-messages" hidden>
+    <div class="toolbar">
+      <select id="msg-status">
+        <option value="">全部状态</option>
+        <option value="accepted">已受理</option>
+        <option value="denied">已拒绝</option>
+        <option value="duplicate">重复推送</option>
+      </select>
+      <select id="msg-session"><option value="">全部对话</option></select>
+      <input id="msg-q" type="search" placeholder="搜索内容 / openid / 昵称 / 对话">
+      <button id="msg-refresh" class="ghost" type="button">刷新</button>
+      <span class="dim" id="msg-hint">每 3 秒自动更新</span>
+    </div>
+    <div id="msg-list"></div>
+    <div class="toolbar"><button id="msg-more" class="ghost" type="button" hidden>加载更早的消息</button></div>
+  </section>
+
+  <section id="tab-whitelist" hidden>
+    <div class="card">
+      <h2>白名单</h2>
+      <div class="dim mb">名单里的用户可以在单聊和群聊里使用机器人；绑定者始终可用。</div>
+      <div id="wl-owner"></div>
+      <div id="wl-users"></div>
+      <form id="wl-form" class="toolbar" autocomplete="off">
+        <input id="wl-input" type="text" placeholder="粘贴要放行的 openid" size="40">
+        <button type="submit">加入白名单</button>
+        <span id="wl-err" class="err"></span>
+      </form>
+    </div>
+    <div class="card">
+      <h2>最近被拒绝的用户</h2>
+      <div id="wl-seen"></div>
+    </div>
+  </section>
+
+  <section id="tab-sessions" hidden>
+    <div class="grid-sess">
+      <div><div id="sess-list"></div></div>
+      <div id="sess-detail"><div class="card"><span class="empty">选择左侧的会话查看信息与对话日志</span></div></div>
+    </div>
+  </section>
+</main>
+<script src="/static/md.js"></script>
+<script src="/static/app.js"></script>
+</body>
+</html>

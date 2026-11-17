@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>QQBot Bridge 部署示意</title>
+<style>
+  :root{
+    --ink:#1e293b; --ink2:#64748b; --line:#c7d2fe; --blue:#4f6ef7;
+    --violet:#7c5cf0; --green:#10b981; --bg1:#fbfcff; --bg2:#eef2ff;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{width:1080px;height:640px;overflow:hidden}
+  body{
+    font-family:"Noto Sans CJK SC","Noto Sans SC",system-ui,sans-serif;
+    background:linear-gradient(160deg,var(--bg1) 0%,var(--bg2) 100%);
+    color:var(--ink);
+  }
+  svg{display:block}
+  .card{fill:#fff;stroke:var(--line);stroke-width:1.4}
+  .shadow{fill:rgba(79,110,247,.10);filter:blur(10px)}
+  .t1{font-size:20px;font-weight:700;fill:var(--ink)}
+  .t2{font-size:13px;fill:var(--ink2)}
+  .t3{font-size:17px;font-weight:650;fill:var(--ink)}
+  .t4{font-size:12.5px;fill:var(--ink2)}
+  .note{font-size:12.5px;fill:#4b5b76}
+  .note-b{font-size:12.5px;fill:var(--blue)}
+  .badgeQ{fill:var(--blue)}
+  .badgeV{fill:var(--violet)}
+  .badgeG{fill:var(--green)}
+  .glyph{stroke:#fff;stroke-width:2;fill:none;stroke-linecap:round;stroke-linejoin:round}
+  .down{stroke:var(--violet);stroke-width:2.2;fill:none}
+  .up{stroke:var(--blue);stroke-width:2.2;fill:none;stroke-dasharray:7 6}
+  .same{stroke:var(--violet);stroke-width:1.8;fill:none}
+</style>
+</head>
+<body>
+<svg width="1080" height="640" viewBox="0 0 1080 640" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#fbfcff"/>
+      <stop offset="100%" stop-color="#e9eefe"/>
+    </linearGradient>
+    <marker id="arrowDown" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#7c5cf0"/>
+    </marker>
+    <marker id="arrowUp" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#4f6ef7"/>
+    </marker>
+    <marker id="arrowBoth" viewBox="0 0 10 10" refX="5" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#7c5cf0"/>
+    </marker>
+  </defs>
+
+  <rect x="0" y="0" width="1080" height="640" fill="url(#bg)"/>
+
+  <!-- 顶部：QQ 客户端 -->
+  <g>
+    <rect class="shadow" x="302" y="66" width="480" height="112" rx="18"/>
+    <rect class="card" x="300" y="60" width="480" height="112" rx="18"/>
+    <!-- 图标：手机 + 电脑 -->
+    <circle class="badgeQ" cx="352" cy="116" r="23"/>
+    <g transform="translate(340,108)">
+      <rect class="glyph" x="0.5" y="0.5" width="9" height="15" rx="2"/>
+      <path class="glyph" d="M3 12.4h4"/>
+      <rect class="glyph" x="11.5" y="3.5" width="11" height="8" rx="1.6"/>
+      <path class="glyph" d="M15 14.8h4"/>
+    </g>
+    <text class="t1" x="396" y="123">手机 QQ / PC QQ</text>
+  </g>
+
+  <!-- 并行两条链路 -->
+  <path class="down" d="M470 172 L470 292" marker-end="url(#arrowDown)"/>
+  <path class="up" d="M610 292 L610 172" marker-end="url(#arrowUp)"/>
+  <text class="note" x="452" y="228" text-anchor="end">WebSocket 下行：用户消息</text>
+  <text class="note-b" x="628" y="228">上行回传：过程 / 结果 / 截图</text>
+
+  <!-- 远程主机容器 -->
+  <g>
+    <rect x="140" y="292" width="800" height="292" rx="22" fill="rgba(238,242,255,.72)"
+          stroke="#a5b4fc" stroke-width="1.6" stroke-dasharray="7 6"/>
+    <text class="t1" x="172" y="333" style="font-size:17px">远程主机（Linux）</text>
+
+    <!-- qqbot_bridge -->
+    <rect class="shadow" x="192" y="368" width="310" height="142" rx="16"/>
+    <rect class="card" x="190" y="362" width="310" height="142" rx="16"/>
+    <circle class="badgeV" cx="236" cy="432" r="19"/>
+    <g transform="translate(224,420)" stroke="#fff" stroke-width="1.8" fill="none"
+       stroke-linecap="round" stroke-linejoin="round">
+      <path d="M2 7.5h17"/><path d="M14 3.5l4 4-4 4"/>
+      <path d="M22 16.5H5"/><path d="M10 12.5l-4 4 4 4"/>
+    </g>
+    <text class="t3" x="268" y="428">qqbot_bridge</text>
+    <text class="t4" x="268" y="452">接收消息 · 调度任务</text>
+
+    <!-- 同机调用 -->
+    <path class="same" d="M504 433 L586 433" marker-start="url(#arrowBoth)" marker-end="url(#arrowBoth)"/>
+    <text class="t4" x="545" y="466" text-anchor="middle">同机调用</text>
+
+    <!-- CodeBuddy / Cursor -->
+    <rect class="shadow" x="592" y="368" width="310" height="142" rx="16"/>
+    <rect class="card" x="590" y="362" width="310" height="142" rx="16"/>
+    <circle class="badgeG" cx="636" cy="432" r="19"/>
+    <g transform="translate(624,420)" stroke="#fff" stroke-width="1.8" fill="none"
+       stroke-linecap="round" stroke-linejoin="round">
+      <rect x="1" y="2" width="22" height="20" rx="3"/>
+      <path d="M6.5 8.5l3 3-3 3"/>
+      <path d="M13 15h5"/>
+    </g>
+    <text class="t3" x="668" y="428">CodeBuddy / Cursor</text>
+    <text class="t4" x="668" y="452">CLI 子进程 · 项目目录</text>
+  </g>
+</svg>
+</body>
+</html>

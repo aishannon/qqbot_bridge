@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>登录 · QQBot Bridge</title>
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<div class="login-wrap">
+  <div class="login-card">
+    <img src="/favicon.svg" alt="QQBot Bridge">
+    <h1>QQBot Bridge</h1>
+    <div class="dim">管理端需要登录</div>
+    <form id="form" autocomplete="off">
+      <input id="pw" type="password" placeholder="访问密码" autocomplete="current-password" autofocus>
+      <button id="go" type="submit">登录</button>
+      <div id="msg" class="err"></div>
+    </form>
+    <div id="note" class="note"></div>
+  </div>
+</div>
+<script src="/static/login.js"></script>
+</body>
+</html>

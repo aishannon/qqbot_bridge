@@ -1,0 +1,44 @@
+[Unit]
+# QQBot Bridge 模板实例：qqbot_bridge@<实例名>.service
+#
+# 同一个用户下想同时跑几套（比如一套 CodeBuddy、一套 Cursor）时用它，
+# 每个实例有自己的数据目录 ~/.qqbot_bridge-<实例名>、自己的 QQ 机器人和管理端端口。
+#
+# 安装：
+#   ./scripts/install.sh --service --name cursor
+# 手动等价于：
+#   cp deploy/qqbot_bridge@.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload && systemctl --user enable --now qqbot_bridge@cursor
+#
+# 初始化（扫自己的机器人、指定自己的端口）：
+#   qqbot_bridge -home ~/.qqbot_bridge-cursor config -addr 127.0.0.1:8687
+#   systemctl --user restart qqbot_bridge@cursor
+#
+# 注意：同一个 QQ 机器人 appid 只能给一个实例用，两条 WebSocket 连接会被平台
+# 分发事件，表现为消息时有时无。
+Description=QQBot Bridge instance %i (QQ -> local agent)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# %i 是实例名；-home 让数据目录与默认实例完全隔离（pid、日志、数据库、密码库都跟着走）
+ExecStart=%h/.local/bin/qqbot_bridge -f -home %h/.qqbot_bridge-%i
+WorkingDirectory=%h
+Restart=on-failure
+RestartSec=5s
+
+# 配置里的 secret 只有本用户能读，因此不要用 root 跑
+Environment=HOME=%h
+# systemd 默认 PATH 不含 ~/.local/bin、Go 和 qqep 等用户目录；
+# 不补的话桥接会报 "codebuddy: executable file not found in $PATH"。
+Environment="PATH=%h/background_agent_cli/bin:%h/.devflow/bin:%h/.galileo/bin:%h/.local/bin:%h/bin:/usr/local/bin:/usr/bin:/usr/local/sbin:/usr/sbin:%h/.ft:/usr/local/go/bin:%h/go/bin:%h/.rainbow-cli/bin"
+# 用 Cursor 的实例需要 cursor-agent 的登录态；用 API Key 时建议放进只有本用户可读的文件：
+# EnvironmentFile=%h/.qqbot_bridge-%i/cursor.env   # 文件内容：CURSOR_API_KEY=xxx
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=qqbot_bridge-%i
+
+[Install]
+WantedBy=default.target

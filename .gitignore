@@ -1,0 +1,8 @@
+build/
+.harness/
+.codebuddy/
+__pycache__/
+
+# 本地生成的图片（二维码、截图）
+*.png
+!docs/**/*.png
