@@ -12,6 +12,7 @@ package config
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -64,6 +65,7 @@ func (b Bind) Bound() bool { return b.AppID != "" && b.Secret != "" }
 // Agent 是驱动本机 CLI agent 的启动参数。
 type Agent struct {
 	// Driver 选择 agent 驱动的实现，默认 codebuddy。
+	// 本机找不到 codebuddy 这个命令时，启动会改用 cursor，见 FallbackFromMissingCodeBuddy。
 	Driver         string `json:"driver" yaml:"driver"`
 	Command        string `json:"command" yaml:"command"`               // 可执行文件名，默认随 Driver 变化
 	Model          string `json:"model" yaml:"model"`                   // 为空则用 CLI 默认模型
@@ -89,6 +91,40 @@ func DefaultCommand(driver string) string {
 	default:
 		return DriverCodeBuddy
 	}
+}
+
+// FallbackFromMissingCodeBuddy 在要用 codebuddy、但本机找不到对应命令时改用 cursor-agent。
+//
+// 已经选了别的驱动，或者 codebuddy 的命令确实能启动，就原样返回。
+// 只改驱动名和命令，模型、超时这些字段保留。available 用来探测命令，测试里替换掉。
+func (a Agent) FallbackFromMissingCodeBuddy(available func(string) bool) (Agent, bool) {
+	driver := strings.TrimSpace(a.Driver)
+	if driver == "" {
+		driver = DriverCodeBuddy
+	}
+	if driver != DriverCodeBuddy {
+		return a, false
+	}
+	cmd := strings.TrimSpace(a.Command)
+	if cmd == "" {
+		cmd = DefaultCommand(DriverCodeBuddy)
+	}
+	if available != nil && available(cmd) {
+		return a, false
+	}
+	a.Driver = DriverCursor
+	a.Command = DefaultCommand(DriverCursor)
+	return a, true
+}
+
+// CommandAvailable 判断命令能否在本机启动。带目录的路径直接查文件，否则查 PATH。
+func CommandAvailable(name string) bool {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return false
+	}
+	_, err := exec.LookPath(name)
+	return err == nil
 }
 
 // CommandFor 返回某个驱动该用的可执行文件。

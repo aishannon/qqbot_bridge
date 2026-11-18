@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -46,6 +47,23 @@ func serve(addr string) int {
 		return 1
 	}
 	cfg := store.Get()
+	if next, switched := cfg.Agent.FallbackFromMissingCodeBuddy(config.CommandAvailable); switched {
+		from := strings.TrimSpace(cfg.Agent.Command)
+		if from == "" {
+			from = "codebuddy"
+		}
+		logs.Add("warn", "没找到 %s，自动切换到 %s", from, next.Command)
+		if err := store.Update(func(c *config.Config) error {
+			c.Agent.Driver = next.Driver
+			c.Agent.Command = next.Command
+			return nil
+		}); err != nil {
+			logs.Add("warn", "切换结果没能写入配置，本次运行仍使用 %s：%v", next.Command, err)
+			cfg.Agent = next
+		} else {
+			cfg = store.Get()
+		}
+	}
 	logs.Add("info", "qqbot_bridge %s", versionLine())
 	// 多实例时一眼能看出这个进程用的是哪套目录和机器人
 	logs.Add("info", "数据目录：%s", config.Dir())

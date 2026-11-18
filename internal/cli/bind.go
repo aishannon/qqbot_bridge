@@ -88,6 +88,14 @@ func saveBind(cred qrconnect.Credential) error {
 	if err != nil {
 		return err
 	}
+	return applyBind(store, cred)
+}
+
+// applyBind 把凭据写进调用方已经打开的那份配置。
+//
+// 不能另开一份 Store 再写盘：Get 只返回内存快照，不回读磁盘。
+// 向导若拿着扫码前打开的那份去判断「是否已绑定」，会以为还没绑上，于是跳过启动网关。
+func applyBind(store *config.Store, cred qrconnect.Credential) error {
 	return store.Update(func(c *config.Config) error {
 		c.Bind = config.Bind{
 			AppID:      cred.AppID,

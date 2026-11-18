@@ -2,11 +2,14 @@ package cli
 
 import (
 	"bufio"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
 
 	"qqbot_bridge/internal/config"
+	"qqbot_bridge/internal/qrconnect"
 )
 
 func TestIsLoopbackAddr(t *testing.T) {
@@ -76,6 +79,56 @@ func TestAskAnswer(t *testing.T) {
 	// 没有换行的最后一行也要读出来
 	if got := askAnswer(bufio.NewReader(strings.NewReader("y"))); got != "y" {
 		t.Errorf("无换行输入应读出 y，实际 %q", got)
+	}
+}
+
+// 扫码写盘必须落在向导已经打开的那份 Store 上，否则 Get 仍是未绑定快照，网关不会启动。
+func TestApplyBindVisibleOnSameStore(t *testing.T) {
+	store, err := config.OpenAt(filepath.Join(t.TempDir(), "config.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if store.Get().Bind.Bound() {
+		t.Fatal("空配置不应已绑定")
+	}
+	if err := applyBind(store, qrconnect.Credential{AppID: "app-1", AppSecret: "secret-1", UserOpenID: "openid-1"}); err != nil {
+		t.Fatal(err)
+	}
+	cfg := store.Get()
+	if !cfg.Bind.Bound() || cfg.Bind.AppID != "app-1" || cfg.Bind.Secret != "secret-1" {
+		t.Fatalf("同一份 Store 应立刻能看到凭据，Bound=%v appId=%q", cfg.Bind.Bound(), cfg.Bind.AppID)
+	}
+}
+
+// 凭据刚写入且旧进程还在时必须重启，否则扫码前拉起来的进程不会去连网关。
+func TestGatewayAction(t *testing.T) {
+	cases := []struct {
+		justBound, running bool
+		want               int
+	}{
+		{false, false, gatewayStart},
+		{true, false, gatewayStart},
+		{true, true, gatewayRestart},
+		{false, true, gatewayAlready},
+	}
+	for _, c := range cases {
+		if got := gatewayAction(c.justBound, c.running); got != c.want {
+			t.Errorf("gatewayAction(%v, %v) = %d，期望 %d", c.justBound, c.running, got, c.want)
+		}
+	}
+}
+
+func TestUserUnitInstance(t *testing.T) {
+	t.Cleanup(func() { _ = config.SetDir("") })
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := config.SetDir(filepath.Join(home, ".qqbot_bridge-cursor")); err != nil {
+		t.Fatal(err)
+	}
+	if got := userUnit(); got != "qqbot_bridge@cursor.service" {
+		t.Fatalf("实例目录应对应模板单元，实际 %q", got)
 	}
 }
 

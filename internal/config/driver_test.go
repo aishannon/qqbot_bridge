@@ -48,6 +48,39 @@ func TestCommandFor(t *testing.T) {
 	}
 }
 
+// 本机没有 codebuddy 时改用 cursor-agent；找得到，或本来就不是 codebuddy，则不动。
+func TestFallbackFromMissingCodeBuddy(t *testing.T) {
+	yes := func(string) bool { return true }
+	no := func(string) bool { return false }
+
+	kept := Agent{Driver: DriverCodeBuddy, Command: "codebuddy", Model: "m", TimeoutMinutes: 30}
+	if _, ok := kept.FallbackFromMissingCodeBuddy(yes); ok {
+		t.Fatal("找得到 codebuddy 时不应切换")
+	}
+	next, ok := kept.FallbackFromMissingCodeBuddy(no)
+	if !ok || next.Driver != DriverCursor || next.Command != "cursor-agent" || next.Model != "m" || next.TimeoutMinutes != 30 {
+		t.Fatalf("应切到 cursor-agent 并保留其它字段：%+v ok=%v", next, ok)
+	}
+
+	custom := Agent{Driver: DriverCodeBuddy, Command: "/opt/bin/codebuddy"}
+	if next, ok = custom.FallbackFromMissingCodeBuddy(no); !ok || next.Command != "cursor-agent" {
+		t.Fatal("自定义路径不存在时也应切换")
+	}
+	if _, ok = custom.FallbackFromMissingCodeBuddy(yes); ok {
+		t.Fatal("自定义路径存在时不应切换")
+	}
+
+	cursor := Agent{Driver: DriverCursor, Command: "cursor-agent"}
+	if _, ok = cursor.FallbackFromMissingCodeBuddy(no); ok {
+		t.Fatal("已经是 cursor 时不应再改")
+	}
+
+	blank := Agent{}
+	if next, ok = blank.FallbackFromMissingCodeBuddy(no); !ok || next.Driver != DriverCursor || next.Command != "cursor-agent" {
+		t.Fatalf("空驱动应按 codebuddy 处理并在找不到时切换：%+v ok=%v", next, ok)
+	}
+}
+
 // 会话里写错 driver 要让服务起不来，并指出是哪个会话。
 func TestSessionDriverValidation(t *testing.T) {
 	dir := t.TempDir()

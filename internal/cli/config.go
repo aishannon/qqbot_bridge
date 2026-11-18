@@ -5,8 +5,10 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"net"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strings"
@@ -21,8 +23,10 @@ import (
 
 // runConfig 是 `qqbot_bridge config` 子命令：服务初始化向导。
 //
-// 未绑定时直接扫码；已绑定时先交互确认要不要重新绑定，再检查管理端密码，
-// 最后提示启动/重启服务。脚本里用 -yes 走默认分支（不重新绑定、不设密码）。
+// 未绑定时直接扫码；已绑定时先交互确认要不要重新绑定。凭据一落盘就连上
+// QQ 网关，不再等后面的配置。管理端密码等随后再设：密码下次登录即生效，
+// 白名单、agent、监听地址这类配置重启后才进当前连接。
+// 脚本里用 -yes 走默认分支（不重新绑定、不设密码）；已绑定且服务没在跑时仍会把网关拉起来。
 func runConfig(args []string) int {
 	fs := flag.NewFlagSet("config", flag.ContinueOnError)
 	force := fs.Bool("force", false, "已绑定时也重新扫码绑定")
@@ -64,6 +68,7 @@ func runConfig(args []string) int {
 			fmt.Println("已绑定，跳过扫码（要重绑加 -force）")
 		}
 	}
+	justBound := false
 	if needBind {
 		cred, err := bindRobot(bindOpts{
 			out:     *out,
@@ -74,41 +79,176 @@ func runConfig(args []string) int {
 			fmt.Fprintf(os.Stderr, "绑定失败：%v\n", err)
 			return 1
 		}
-		if err := saveBind(cred); err != nil {
+		if err := applyBind(store, cred); err != nil {
 			fmt.Fprintf(os.Stderr, "保存凭据失败：%v\n", err)
 			return 1
 		}
 		fmt.Printf("绑定完成：appid=%s\n", cred.AppID)
+		justBound = true
+		cfg = store.Get()
 	}
 
-	// 管理端密码：没设置前控制台登录不了，初始化时顺手补上
-	if hasWebPassword() {
+	// 凭据已经在磁盘上就先连网关。密码还没设也不挡：管理端登录不了，QQ 消息进得来。
+	var gatewayErr error
+	if cfg.Bind.Bound() {
+		gatewayErr = connectGateway(cfg, justBound)
+	}
+
+	// 管理端密码：没设置前控制台登录不了。连接已经起来了，这一步放在后面。
+	passwordMissing := !hasWebPassword()
+	if !passwordMissing {
 		fmt.Println("管理端密码：已设置")
 	} else if interactive && confirm("管理端还没设置访问密码，现在设置吗？", true) {
 		if code := runPasswd(nil); code != 0 {
 			return code
 		}
 	} else if !interactive {
-		fmt.Println("管理端密码：未设置（稍后运行 qqbot_bridge passwd）")
+		fmt.Println("管理端密码：未设置（稍后运行 qqbot_bridge passwd，不用为密码重启）")
 	}
 
 	fmt.Println()
-	if pid, running := daemonPID(); running {
-		fmt.Printf("服务正在运行（pid=%d），重启后新配置生效：\n", pid)
-		fmt.Println("  systemctl --user restart qqbot_bridge" + serviceSuffix() + "   # 用 systemd 托管时")
-		fmt.Println("  qqbot_bridge" + instanceArgs() + " -stop && qqbot_bridge" + instanceArgs() + "   # 自建后台进程时")
+	if gatewayErr != nil {
+		fmt.Fprintf(os.Stderr, "启动 QQ 网关失败：%v\n", gatewayErr)
+		fmt.Println("凭据已保存。排除问题后重启：")
+		printRestartHint()
+		return 1
+	}
+	if !cfg.Bind.Bound() {
 		return 0
 	}
-	if interactive && confirm("现在后台启动服务吗？", true) {
-		if err := startDaemon(nil); err != nil {
-			fmt.Fprintln(os.Stderr, "后台启动失败："+err.Error())
-			return 1
-		}
-		fmt.Println("已在后台启动，" + webAddrText(cfg))
-		return 0
+	if passwordMissing {
+		fmt.Println("管理端密码下次登录即生效，不用为它重启。")
 	}
-	fmt.Println("下一步：运行 qqbot_bridge" + instanceArgs() + " 启动服务（-f 前台运行）")
+	fmt.Println("白名单、agent、监听地址等其它配置若在连接之后再改，重启后生效：")
+	printRestartHint()
 	return 0
+}
+
+// 扫码之后怎么对待已经在跑的进程。
+const (
+	gatewayStart = iota
+	gatewayRestart
+	gatewayAlready
+)
+
+// gatewayAction 在凭据已经落盘的前提下决定启动、重启还是不动。
+//
+// 刚写入的 appid 只有新进程会拿去连网关；旧进程若是绑定前拉起来的，手里没有这条连接。
+func gatewayAction(justBound, running bool) int {
+	if !running {
+		return gatewayStart
+	}
+	if justBound {
+		return gatewayRestart
+	}
+	return gatewayAlready
+}
+
+// connectGateway 让已保存的凭据连上 QQ。
+//
+// systemd 用户单元在的话优先交给它，避免再拉一个抢端口的后台进程。
+func connectGateway(cfg config.Config, justBound bool) error {
+	unit := userUnit()
+	unitOK := systemdUnitUsable(unit)
+	active := unitOK && systemdActive(unit)
+	pid, daemonOn := daemonPID()
+	running := active || daemonOn
+
+	switch gatewayAction(justBound, running) {
+	case gatewayAlready:
+		if active {
+			fmt.Printf("QQ 网关已在运行（systemd：%s）。\n", strings.TrimSuffix(unit, ".service"))
+		} else {
+			fmt.Printf("QQ 网关已在运行（pid=%d）。\n", pid)
+		}
+		return nil
+	case gatewayRestart:
+		fmt.Println("凭据已更新，正在重连 QQ 网关…")
+		if active {
+			if err := systemctlUser("restart", unit); err != nil {
+				return err
+			}
+		} else {
+			if err := stopDaemon(); err != nil {
+				return err
+			}
+			if err := startDaemon(nil); err != nil {
+				return err
+			}
+		}
+	default:
+		fmt.Println("正在启动 QQ 网关…")
+		if unitOK && !daemonOn {
+			if err := systemctlUser("start", unit); err != nil {
+				return err
+			}
+		} else if err := startDaemon(nil); err != nil {
+			return err
+		}
+	}
+	fmt.Printf("QQ 网关已连接，可以收消息了。%s\n", webAddrText(cfg))
+	return nil
+}
+
+// userUnit 按数据目录猜 systemd 用户单元名。
+//
+// 默认目录是 qqbot_bridge.service；~/.qqbot_bridge-<实例名> 对应模板实例。
+// 目录对不上安装脚本的约定时返回空，调用方改走自建后台进程。
+func userUnit() string {
+	dir := config.Dir()
+	if dir == config.DefaultDir() {
+		return "qqbot_bridge.service"
+	}
+	prefix := filepath.Base(config.DefaultDir()) + "-"
+	name, ok := strings.CutPrefix(filepath.Base(dir), prefix)
+	if !ok || name == "" {
+		return ""
+	}
+	return "qqbot_bridge@" + name + ".service"
+}
+
+// systemdUnitUsable 判断本机有 systemctl，且这个用户单元文件存在。
+func systemdUnitUsable(unit string) bool {
+	if unit == "" {
+		return false
+	}
+	if _, err := exec.LookPath("systemctl"); err != nil {
+		return false
+	}
+	cmd := exec.Command("systemctl", "--user", "cat", unit)
+	cmd.Stdout = io.Discard
+	cmd.Stderr = io.Discard
+	return cmd.Run() == nil
+}
+
+func systemdActive(unit string) bool {
+	cmd := exec.Command("systemctl", "--user", "is-active", "--quiet", unit)
+	cmd.Stdout = io.Discard
+	cmd.Stderr = io.Discard
+	return cmd.Run() == nil
+}
+
+func systemctlUser(args ...string) error {
+	cmd := exec.Command("systemctl", append([]string{"--user"}, args...)...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		msg := strings.TrimSpace(string(out))
+		if msg == "" {
+			return err
+		}
+		return fmt.Errorf("%v：%s", err, msg)
+	}
+	return nil
+}
+
+// printRestartHint 打印让「连接起来之后才改的配置」生效的两条命令。
+func printRestartHint() {
+	unit := "qqbot_bridge"
+	if u := userUnit(); u != "" {
+		unit = strings.TrimSuffix(u, ".service")
+	}
+	fmt.Println("  systemctl --user restart " + unit + "   # 用 systemd 托管时")
+	fmt.Println("  qqbot_bridge" + instanceArgs() + " -stop && qqbot_bridge" + instanceArgs() + "   # 自建后台进程时")
 }
 
 // saveListenAddr 校验并写入管理端监听地址。
@@ -141,14 +281,6 @@ func instanceArgs() string {
 		return ""
 	}
 	return " -home " + config.Dir()
-}
-
-// serviceSuffix 返回 systemd 实例后缀：默认实例为空，其它目录按目录名给出提示。
-func serviceSuffix() string {
-	if config.Dir() == config.DefaultDir() {
-		return ""
-	}
-	return "（或 qqbot_bridge@<实例名>）"
 }
 
 // configState 打印当前配置概况，让用户知道这次会改什么。

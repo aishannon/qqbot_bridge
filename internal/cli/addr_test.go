@@ -56,8 +56,8 @@ func TestInstanceArgs(t *testing.T) {
 	if got := instanceArgs(); got != "" {
 		t.Fatalf("默认目录不应带 -home：%q", got)
 	}
-	if got := serviceSuffix(); got != "" {
-		t.Fatalf("默认目录不应提示实例名：%q", got)
+	if got := userUnit(); got != "qqbot_bridge.service" {
+		t.Fatalf("默认目录应对应 qqbot_bridge.service，实际 %q", got)
 	}
 
 	if err := config.SetDir("/tmp/inst-x"); err != nil {
@@ -66,7 +66,7 @@ func TestInstanceArgs(t *testing.T) {
 	if got := instanceArgs(); got != " -home /tmp/inst-x" {
 		t.Fatalf("-home 片段不对：%q", got)
 	}
-	if got := serviceSuffix(); got == "" {
-		t.Fatal("非默认目录应提示 systemd 实例名")
+	if got := userUnit(); got != "" {
+		t.Fatalf("不是 ~/.qqbot_bridge-<实例名> 时不应猜单元名：%q", got)
 	}
 }

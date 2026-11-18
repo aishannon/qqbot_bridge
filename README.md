@@ -26,7 +26,7 @@
 
 ## 前置条件
 
-- Linux 或 macOS（Windows 只能 `-f` 前台运行）
+- Linux、macOS，或 Windows 的 Git Bash（Windows 上程序只能 `-f` 前台运行）
 - Go 1.26+（只用来编译，装好后不需要；以 `go.mod` 里的 `go` 指令为准，`install.sh` 会检查）
 - 已安装并登录 CodeBuddy CLI：`codebuddy --version` 能跑通（想改用 Cursor 的话装 `cursor-agent` 即可，见「使用 Cursor」）
 - 可选：Node.js，仅用于跑前端 Markdown 渲染器的单测，没有也不影响使用和 `go test`
@@ -37,12 +37,10 @@
 ```bash
 git clone <本仓库> qqbot_bridge && cd qqbot_bridge
 ./scripts/install.sh            # 编译并安装到 ~/.local/bin
-./scripts/install.sh --service  # 顺便装成 systemd 用户服务
+./scripts/install.sh --service  # Linux：顺便装成 systemd 用户服务
 ```
 
-脚本做三件事：检查 Go 和 codebuddy、编译 `qqbot_bridge`（把 git 版本和构建时间编进去，
-`qqbot_bridge -v` 可查）、装进 `~/.local/bin`（可用 `PREFIX=` 改）。加 `--service` 会写一份
-systemd 用户单元并启动。装完后运行一次 `qqbot_bridge config` 做初始化。
+Windows 在 Git Bash 里运行 `bash scripts/install.sh`。脚本会检查 Go，以及 `codebuddy` / `cursor-agent` 是否在 PATH 里，再编译并装进 `~/.local/bin`（可用 `PREFIX=` 改）。已经有实例在跑时会询问要不要重启，需要你执行的命令各自单独占一行。`--service` 只在 Linux 上安装 systemd 用户单元。装完后按脚本打印的命令做初始化。
 
 不想用脚本也可以：
 
@@ -59,24 +57,27 @@ qqbot_bridge config
 向导会先打印当前状态（配置目录、是否已绑定、管理端密码、服务是否在跑），然后：
 
 - **没绑定过**：直接出二维码，终端里就能扫（黑码白底），同时落一张 PNG 并打印链接；
-  扫码确认后凭据写进 `~/.qqbot_bridge/config.yaml`（0600，含 AppSecret，别提交）。
+  扫码确认后凭据写进 `~/.qqbot_bridge/config.yaml`（0600，含 AppSecret，别提交），
+  并立刻启动 QQ 网关（本机已装 systemd 用户单元时走 `systemctl --user`，否则拉起后台进程）。
 - **已经绑定过**：先问「要重新扫码绑定吗？」，默认 **N**，直接回车就保留现有凭据；
-  确实要换机器人再加 `-force`，或者交互里选 y。
-- **没设管理端密码**：顺手提示设置（`[Y/n]`），不设也能跑，只是管理端登录不了。
-- **最后**：服务没起会问要不要现在后台启动；已经在跑就提示怎么重启生效。
+  确实要换机器人再加 `-force`，或者交互里选 y。重新绑定会重启网关，让新凭据连上。
+- **网关起来之后**：没设管理端密码会再问一次（`[Y/n]`）。密码下次登录即生效，不用为它重启。
+  白名单、agent、监听地址等若在连接之后再改，重启后才进当前这条连接。
 
 <p align="center">
   <img src="docs/screenshots/01-config-and-bind.png" width="820" alt="qqbot_bridge config 的实际输出：打印当前状态、生成二维码等待扫码，扫码后确认绑定">
 </p>
 
-<p align="center"><sub><code>qqbot_bridge config</code> 跑起来就是这样：先打印当前状态，再出二维码等扫码，绑定完成后接着问要不要设管理端密码、要不要现在启动服务</sub></p>
+<p align="center"><sub><code>qqbot_bridge config</code> 跑起来就是这样：先打印当前状态，再出二维码等扫码；绑定完成后先连上 QQ，再问要不要设管理端密码</sub></p>
 
-脚本/无人值守用 `qqbot_bridge config -yes`：不交互，已绑定就跳过、不设密码。
+脚本/无人值守用 `qqbot_bridge config -yes`：不交互，已绑定就跳过、不设密码；服务没在跑时仍会把网关拉起来。
 
 二维码有效期有限，过期就重跑一次 `qqbot_bridge config`。旧的 `qqbot_bridge bind` 仍然可用，
 行为不变（只扫码、不询问）。
 
 ## 第二步：启动
+
+`qqbot_bridge config` 在扫码成功后已经把网关拉起。没跑向导、或要自己指定前台时：
 
 ```bash
 qqbot_bridge          # 后台运行（默认），关掉终端也不退出
@@ -270,7 +271,7 @@ web:
 |------|------|
 | `bind.appId` / `bind.secret` | 扫码绑定后自动写入 |
 | `bind.whitelist` | 允许使用的 openid 列表 |
-| `agent.driver` | 用哪个 agent 驱动，默认 `codebuddy`；可选 `cursor`（需本机装好 `cursor-agent` 并登录，见「使用 Cursor」） |
+| `agent.driver` | 用哪个 agent 驱动，默认 `codebuddy`。本机找不到 `codebuddy` 命令时，启动会自动改成 `cursor` 并写回配置。也可直接写 `cursor`（需本机装好 `cursor-agent` 并登录，见「使用 Cursor」） |
 | `agent.command` | 驱动的可执行文件，默认随 driver 变化（`codebuddy` / `cursor-agent`） |
 | `agent.model` | 全局默认模型，留空跟随 CLI 默认；驱动不支持模型列表时 `/models` 会直接说明 |
 | `agent.permissionMode` | 默认 `bypassPermissions` |
@@ -330,7 +331,7 @@ transcript 里跟读出来，以 `@角色名 · 摘要` 的独立消息推到手
 把 `~/.qqbot_bridge/config.yaml` 和 `sessions.yaml` 拷过去即可（含 secret，注意安全；会话里的目录路径在新机器上要存在），或者在新机器上重新 `qqbot_bridge config`。
 
 **升级**
-重新拉代码后 `./scripts/install.sh`，再 `systemctl --user restart qqbot_bridge`（或 `qqbot_bridge -stop && qqbot_bridge`）。
+重新拉代码后 `./scripts/install.sh`。已经有实例在跑时，脚本会询问要不要重启，并按当前系统打印对应命令（macOS 和 Windows 没有 `systemctl`）。
 
 ## 卸载
 
@@ -384,7 +385,7 @@ rm -rf ~/.qqbot_bridge
 
 ### 使用 Cursor
 
-把 `agent.driver` 切成 `cursor`，桥接改用本机的 Cursor CLI（`cursor-agent`）执行任务：
+把 `agent.driver` 切成 `cursor`，桥接改用本机的 Cursor CLI（`cursor-agent`）执行任务。本机没有 `codebuddy` 时不用手改：服务启动发现命令不存在，会自动切到 `cursor` 并写进 `config.yaml`。
 
 ```yaml
 agent:

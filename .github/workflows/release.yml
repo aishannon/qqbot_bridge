@@ -1,0 +1,193 @@
+name: Release
+
+# 在 GitHub 托管 runner 上交叉编译，再把各平台的包挂到 Release。
+# 本机只推 tag。模块下载和附件上传都发生在 GitHub 的网络里。
+#
+# Go 的 GOPROXY 逗号列表只在对方返回 404/410 时才换下一个源，连接超时不会。
+# 所以这里按代理逐个重试，而不是写成一条 GOPROXY。
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: ${{ matrix.goos }}-${{ matrix.goarch }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { goos: linux, goarch: amd64 }
+          - { goos: linux, goarch: arm64 }
+          - { goos: darwin, goarch: amd64 }
+          - { goos: darwin, goarch: arm64 }
+          - { goos: windows, goarch: amd64 }
+          - { goos: windows, goarch: arm64 }
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build archive
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "0"
+          GOTOOLCHAIN: local
+        run: |
+          set -euo pipefail
+
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            version="${GITHUB_REF_NAME}"
+          else
+            version="dev-${GITHUB_SHA:0:7}"
+          fi
+          buildtime="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+          # 托管 runner 先走官方源。官方源超时再换国内代理，避免一次抖动直接失败。
+          download_mods() {
+            local proxies=(
+              "https://proxy.golang.org,direct"
+              "https://proxy.golang.org,direct"
+              "https://goproxy.cn,direct"
+              "https://mirrors.aliyun.com/goproxy/,direct"
+              "https://goproxy.io,direct"
+            )
+            local i=0 p
+            for p in "${proxies[@]}"; do
+              i=$((i + 1))
+              echo "go mod download attempt ${i}: GOPROXY=${p}"
+              if timeout 90 env GOPROXY="$p" go mod download; then
+                return 0
+              fi
+              echo "attempt ${i} failed" >&2
+              sleep $((i * 3))
+            done
+            echo "all module proxies failed" >&2
+            return 1
+          }
+          download_mods
+
+          ext=""
+          if [ "$GOOS" = "windows" ]; then
+            ext=".exe"
+          fi
+          pkg="${RUNNER_TEMP}/pkg"
+          mkdir -p "$pkg" dist
+          bin="qqbot_bridge${ext}"
+          # 依赖已经进模块缓存，编译本身不再访问网络。
+          GOPROXY=off go build -trimpath \
+            -ldflags "-s -w -X main.version=${version} -X main.buildTime=${buildtime}" \
+            -o "${pkg}/${bin}" .
+
+          if [ "${GOOS}/${GOARCH}" = "linux/amd64" ]; then
+            "${pkg}/${bin}" -v
+          fi
+
+          archive="qqbot_bridge_${version}_${GOOS}_${GOARCH}"
+          if [ "$GOOS" = "windows" ]; then
+            (cd "$pkg" && zip -q -9 "${GITHUB_WORKSPACE}/dist/${archive}.zip" "$bin")
+          else
+            tar -C "$pkg" -czf "dist/${archive}.tar.gz" "$bin"
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+
+  publish:
+    name: Publish release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Checksum and publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          cd dist
+          shopt -s nullglob
+          files=( *.tar.gz *.zip )
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "no release archives" >&2
+            exit 1
+          fi
+          sha256sum -- "${files[@]}" > SHA256SUMS
+
+          tag="${GITHUB_REF_NAME}"
+          repo="${GITHUB_REPOSITORY}"
+          base="${GITHUB_SERVER_URL}/${repo}/releases/download/${tag}"
+          changelog="$(gh api --method POST "repos/${repo}/releases/generate-notes" -f tag_name="$tag" --jq .body 2>/dev/null || true)"
+
+          cat > notes.md <<EOF
+          ## 安装
+
+          按平台下载一个包，校验后再放进 PATH。下载中断时用 curl -C - 续传。
+
+          Linux / macOS（把文件名里的 linux_amd64 换成 darwin_arm64、darwin_amd64 或 linux_arm64）:
+
+              file=qqbot_bridge_${tag}_linux_amd64.tar.gz
+              curl -fL --retry 5 --retry-delay 2 -C - -o "\$file" "${base}/\$file"
+              curl -fL --retry 5 --retry-delay 2 -C - -o SHA256SUMS "${base}/SHA256SUMS"
+              grep "  \$file" SHA256SUMS | sha256sum -c
+              tar -xzf "\$file"
+              install -m755 qqbot_bridge "\$HOME/.local/bin/qqbot_bridge"
+
+          macOS 校验改用: grep "  \$file" SHA256SUMS | shasum -a 256 -c
+
+          Windows 下载同名 zip，解压得到 qqbot_bridge.exe。Windows 只能前台运行: qqbot_bridge.exe -f
+
+          ## 变更
+          EOF
+          if [ -n "${changelog}" ]; then
+            printf '\n%s\n' "${changelog}" >> notes.md
+          else
+            printf '\n%s\n' "（自动变更说明没生成，请看这个 tag 对应的提交。）" >> notes.md
+          fi
+
+          publish_once() {
+            if gh release view "$tag" --repo "$repo" >/dev/null 2>&1; then
+              gh release upload "$tag" --repo "$repo" --clobber "${files[@]}" SHA256SUMS || return 1
+              gh release edit "$tag" --repo "$repo" --notes-file notes.md || return 1
+            else
+              gh release create "$tag" --repo "$repo" --title "$tag" --notes-file notes.md --verify-tag \
+                "${files[@]}" SHA256SUMS || return 1
+            fi
+          }
+
+          for i in 1 2 3 4 5; do
+            if publish_once; then
+              exit 0
+            fi
+            echo "publish failed, retry ${i}" >&2
+            sleep $((i * 5))
+          done
+          echo "publish failed after retries" >&2
+          exit 1

@@ -24,7 +24,7 @@ func usage() {
   qqbot_bridge <子命令> [参数]
 
 子命令：
-  config    服务初始化：扫码绑定机器人、设置管理端密码、提示启动
+  config    服务初始化：扫码绑定后立刻连接 QQ 网关，再设置管理端密码
               -force            已绑定时也重新扫码
               -yes              不交互，全部用默认答案（脚本用）
               -out <文件>       二维码图片输出路径（默认 ~/.qqbot_bridge/qr-bind.png）
@@ -41,7 +41,7 @@ func usage() {
 	flag.PrintDefaults()
 	fmt.Fprint(out, `
 常用示例：
-  qqbot_bridge config            首次使用：初始化（扫码绑定 + 设置密码）
+  qqbot_bridge config            首次使用：扫码绑定并连上 QQ，然后设置密码
   qqbot_bridge passwd            设置管理端密码
   qqbot_bridge                   后台启动；管理端默认 http://127.0.0.1:8686
   qqbot_bridge -f                前台运行，日志打到终端（systemd 托管时用）
