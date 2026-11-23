@@ -66,12 +66,16 @@ func (b Bind) Bound() bool { return b.AppID != "" && b.Secret != "" }
 type Agent struct {
 	// Driver 选择 agent 驱动的实现，默认 codebuddy。
 	// 本机找不到 codebuddy 这个命令时，启动会改用 cursor，见 FallbackFromMissingCodeBuddy。
-	Driver         string `json:"driver" yaml:"driver"`
-	Command        string `json:"command" yaml:"command"`               // 可执行文件名，默认随 Driver 变化
-	Model          string `json:"model" yaml:"model"`                   // 为空则用 CLI 默认模型
-	PermissionMode string `json:"permissionMode" yaml:"permissionMode"` // 默认 bypassPermissions，让 QQ 指令能直接落地
-	MaxTurns       int    `json:"maxTurns" yaml:"maxTurns"`             // 单轮最多 agent 轮次，0 表示不限制
-	TimeoutMinutes int    `json:"timeoutMinutes" yaml:"timeoutMinutes"` // 单个任务最长执行时间，默认 30 分钟
+	Driver string `json:"driver" yaml:"driver"`
+	// Command 是当前全局驱动的可执行文件；安装脚本会写成绝对路径，避免 systemd/后台进程 PATH 不全。
+	Command string `json:"command" yaml:"command"`
+	// Commands 按驱动名存可执行文件绝对路径（键为 codebuddy / cursor）。
+	// 会话切到非全局驱动时走这里，避免只配了一个 agent.command 时另一边仍依赖 PATH。
+	Commands       map[string]string `json:"commands,omitempty" yaml:"commands,omitempty"`
+	Model          string            `json:"model" yaml:"model"`                   // 为空则用 CLI 默认模型
+	PermissionMode string            `json:"permissionMode" yaml:"permissionMode"` // 默认 bypassPermissions，让 QQ 指令能直接落地
+	MaxTurns       int               `json:"maxTurns" yaml:"maxTurns"`             // 单轮最多 agent 轮次，0 表示不限制
+	TimeoutMinutes int               `json:"timeoutMinutes" yaml:"timeoutMinutes"` // 单个任务最长执行时间，默认 30 分钟
 }
 
 // agent.driver 的可选值。
@@ -93,6 +97,21 @@ func DefaultCommand(driver string) string {
 	}
 }
 
+// commandForDriver 返回某个驱动在本 Agent 里配置的可执行文件（未配置则空）。
+func (a Agent) commandForDriver(driver string) string {
+	driver = strings.TrimSpace(driver)
+	if driver == "" {
+		return ""
+	}
+	if path := strings.TrimSpace(a.Commands[driver]); path != "" {
+		return path
+	}
+	if driver == strings.TrimSpace(a.Driver) || (strings.TrimSpace(a.Driver) == "" && driver == DriverCodeBuddy) {
+		return strings.TrimSpace(a.Command)
+	}
+	return ""
+}
+
 // FallbackFromMissingCodeBuddy 在要用 codebuddy、但本机找不到对应命令时改用 cursor-agent。
 //
 // 已经选了别的驱动，或者 codebuddy 的命令确实能启动，就原样返回。
@@ -105,15 +124,21 @@ func (a Agent) FallbackFromMissingCodeBuddy(available func(string) bool) (Agent,
 	if driver != DriverCodeBuddy {
 		return a, false
 	}
-	cmd := strings.TrimSpace(a.Command)
+	cmd := a.commandForDriver(DriverCodeBuddy)
 	if cmd == "" {
 		cmd = DefaultCommand(DriverCodeBuddy)
 	}
 	if available != nil && available(cmd) {
 		return a, false
 	}
+	// 先读 cursor 路径再改 Driver，避免 commandForDriver 把旧的 codebuddy command 当成 cursor 的。
+	cursorCmd := strings.TrimSpace(a.Commands[DriverCursor])
 	a.Driver = DriverCursor
-	a.Command = DefaultCommand(DriverCursor)
+	if cursorCmd != "" {
+		a.Command = cursorCmd
+	} else {
+		a.Command = DefaultCommand(DriverCursor)
+	}
 	return a, true
 }
 
@@ -129,13 +154,33 @@ func CommandAvailable(name string) bool {
 
 // CommandFor 返回某个驱动该用的可执行文件。
 //
-// 配置里只有一个全局 agent.command，它只对全局驱动生效；会话切到别的驱动时
-// 用那个 CLI 的默认命令，避免把 codebuddy 的路径传给 cursor-agent。
+// 优先用 agent.commands 里按驱动存的绝对路径；否则全局驱动用 agent.command，
+// 其它驱动回落到各自的默认命令名（避免把 codebuddy 的路径传给 cursor-agent）。
 func (c Config) CommandFor(driver string) string {
-	if driver == c.Agent.Driver {
-		return c.Agent.Command
+	driver = strings.TrimSpace(driver)
+	if driver == "" {
+		driver = c.Agent.Driver
+	}
+	if path := c.Agent.commandForDriver(driver); path != "" {
+		return path
 	}
 	return DefaultCommand(driver)
+}
+
+// SetAgentCommand 把某个驱动的可执行文件路径写入 Commands，并在它是当前全局驱动时同步 Command。
+func (a *Agent) SetAgentCommand(driver, path string) {
+	driver = strings.TrimSpace(driver)
+	path = strings.TrimSpace(path)
+	if driver == "" || path == "" {
+		return
+	}
+	if a.Commands == nil {
+		a.Commands = map[string]string{}
+	}
+	a.Commands[driver] = path
+	if strings.TrimSpace(a.Driver) == driver || (strings.TrimSpace(a.Driver) == "" && driver == DriverCodeBuddy) {
+		a.Command = path
+	}
 }
 
 // KnownDriver 判断名字是不是已实现的驱动。

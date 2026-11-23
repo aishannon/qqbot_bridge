@@ -342,6 +342,46 @@ func (s *Store) Update(fn func(c *Config) error) error {
 	return s.write()
 }
 
+// UpdateService 只改服务配置并落盘 config.yaml，不动 sessions.yaml。
+//
+// 安装脚本写入 agent 绝对路径时用它：此时往往还没有会话文件，
+// 走 Update 会把安装时的 cwd 当成默认会话写进去。
+func (s *Store) UpdateService(fn func(c *Config) error) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.refresh(); err != nil {
+		return err
+	}
+	if err := fn(s.cfg); err != nil {
+		return err
+	}
+	s.normalize()
+	return s.writeService()
+}
+
+// writeService 只原子写入 config.yaml。
+func (s *Store) writeService() error {
+	if err := os.MkdirAll(filepath.Dir(s.servicePath), 0o700); err != nil {
+		return err
+	}
+	c := s.cfg
+	svc, err := marshal(serviceHeader, serviceFile{
+		Bind: c.Bind, Agent: c.Agent, Push: c.Push, Menu: c.Menu, Discover: c.Discover, Web: c.Web,
+	})
+	if err != nil {
+		return err
+	}
+	if bytes.Equal(svc, s.svcData) {
+		return nil
+	}
+	if err := writeAtomic(s.servicePath, svc); err != nil {
+		return err
+	}
+	s.svcData = svc
+	s.svcSig, _ = statSig(s.servicePath)
+	return nil
+}
+
 // SetAllowed 把 openID 加入或移出白名单。绑定者始终可用，既不会被写进名单，也不能被移出。
 func (s *Store) SetAllowed(openID string, allow bool) error {
 	openID = strings.TrimSpace(openID)
@@ -366,11 +406,22 @@ func (s *Store) normalize() {
 	if s.cfg.Agent.Driver == "" {
 		s.cfg.Agent.Driver = def.Agent.Driver
 	}
+	if path := strings.TrimSpace(s.cfg.Agent.Commands[s.cfg.Agent.Driver]); path != "" {
+		// 安装脚本写入的绝对路径优先：全局 command 与当前驱动对齐。
+		if s.cfg.Agent.Command == "" || s.cfg.Agent.Command == DefaultCommand(s.cfg.Agent.Driver) ||
+			(s.cfg.Agent.Driver != DriverCodeBuddy && s.cfg.Agent.Command == DefaultCommand(DriverCodeBuddy)) {
+			s.cfg.Agent.Command = path
+		}
+	}
 	if s.cfg.Agent.Command == "" || (s.cfg.Agent.Driver != DriverCodeBuddy && s.cfg.Agent.Command == DefaultCommand(DriverCodeBuddy)) {
 		// 默认可执行文件跟着驱动走：切到 cursor 时不至于还去拉 codebuddy。
 		// 第二种情况是「换驱动但没改 command」，这时 command 还是 codebuddy 的默认值，
 		// 按没配置处理；用户显式写了别的路径就原样保留。
-		s.cfg.Agent.Command = DefaultCommand(s.cfg.Agent.Driver)
+		if path := strings.TrimSpace(s.cfg.Agent.Commands[s.cfg.Agent.Driver]); path != "" {
+			s.cfg.Agent.Command = path
+		} else {
+			s.cfg.Agent.Command = DefaultCommand(s.cfg.Agent.Driver)
+		}
 	}
 	for i := range s.cfg.Sessions {
 		s.cfg.Sessions[i].Driver = strings.TrimSpace(s.cfg.Sessions[i].Driver)

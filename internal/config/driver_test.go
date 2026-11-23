@@ -46,6 +46,26 @@ func TestCommandFor(t *testing.T) {
 	if got := cfg.CommandFor(DriverCursor); got != "cursor-agent" {
 		t.Fatalf("其它驱动应使用自己的默认命令：%q", got)
 	}
+
+	cfg.Agent.Commands = map[string]string{
+		DriverCodeBuddy: "/opt/bin/codebuddy",
+		DriverCursor:    "/opt/bin/cursor-agent",
+	}
+	if got := cfg.CommandFor(DriverCursor); got != "/opt/bin/cursor-agent" {
+		t.Fatalf("commands 里的路径应优先：%q", got)
+	}
+}
+
+func TestSetAgentCommand(t *testing.T) {
+	a := Agent{Driver: DriverCodeBuddy, Command: "codebuddy"}
+	a.SetAgentCommand(DriverCodeBuddy, "/usr/local/bin/codebuddy")
+	a.SetAgentCommand(DriverCursor, "/opt/cursor-agent")
+	if a.Command != "/usr/local/bin/codebuddy" {
+		t.Fatalf("当前驱动应同步 command：%q", a.Command)
+	}
+	if a.Commands[DriverCursor] != "/opt/cursor-agent" {
+		t.Fatalf("应记下另一驱动的路径：%v", a.Commands)
+	}
 }
 
 // 本机没有 codebuddy 时改用 cursor-agent；找得到，或本来就不是 codebuddy，则不动。
@@ -60,6 +80,15 @@ func TestFallbackFromMissingCodeBuddy(t *testing.T) {
 	next, ok := kept.FallbackFromMissingCodeBuddy(no)
 	if !ok || next.Driver != DriverCursor || next.Command != "cursor-agent" || next.Model != "m" || next.TimeoutMinutes != 30 {
 		t.Fatalf("应切到 cursor-agent 并保留其它字段：%+v ok=%v", next, ok)
+	}
+
+	withCmds := Agent{
+		Driver: DriverCodeBuddy, Command: "codebuddy",
+		Commands: map[string]string{DriverCursor: "/opt/bin/cursor-agent"},
+	}
+	next, ok = withCmds.FallbackFromMissingCodeBuddy(no)
+	if !ok || next.Driver != DriverCursor || next.Command != "/opt/bin/cursor-agent" {
+		t.Fatalf("切换时应优先用 commands 里的绝对路径：%+v ok=%v", next, ok)
 	}
 
 	custom := Agent{Driver: DriverCodeBuddy, Command: "/opt/bin/codebuddy"}

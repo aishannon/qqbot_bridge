@@ -122,6 +122,9 @@ func Main(args []string) int {
 			return runBind(args[1:])
 		case "passwd":
 			return runPasswd(args[1:])
+		case "set-agent-paths":
+			// 安装脚本专用：把 codebuddy / cursor-agent 的绝对路径写入配置。
+			return runSetAgentPaths(args[1:])
 		case "help", "-help", "--help":
 			flag.CommandLine.SetOutput(os.Stdout)
 			usage()

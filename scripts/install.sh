@@ -81,6 +81,244 @@ confirm() {
 
 bin_path() { printf '%s/%s' "$PREFIX" "$BIN_NAME"; }
 
+# 把路径转成本机原生形式（Windows Git Bash 下 Go 认盘符路径）。
+native_path() {
+	local p="$1"
+	if [ "$OS" = "windows" ] && command -v cygpath >/dev/null 2>&1; then
+		cygpath -w "$p"
+		return
+	fi
+	printf '%s\n' "$p"
+}
+
+# 若路径已是绝对路径则原样返回，否则拼成绝对路径；不解析符号链接，
+# 以便保留 cursor-agent 的稳定 shim（.local/bin），避免钉死到带版本号的目录。
+abs_path() {
+	local p="$1" dir base
+	case "$p" in
+	/* | [A-Za-z]:/* | [A-Za-z]:\\*)
+		printf '%s\n' "$p"
+		return
+		;;
+	esac
+	dir="$(cd "$(dirname "$p")" 2>/dev/null && pwd)" || return 1
+	base="$(basename "$p")"
+	printf '%s/%s\n' "$dir" "$base"
+}
+
+# cursor-agent 安装器常把 PATH 指到 .../versions/<hash>/，升级后会失效。
+# 官方布局是 agent-cli/.local/share/cursor-agent/versions/<hash>/cursor-agent，
+# 稳定入口在同级的 agent-cli/.local/bin/cursor-agent（符号链接，随升级更新）。
+prefer_stable_agent() {
+	local name="$1" p="$2" shim local_root
+	case "$p" in
+	*/versions/*/"$name" | */versions/*/"$name".exe)
+		# dirname=.../versions/<hash> → ../../../.. = .../.local
+		local_root="$(cd "$(dirname "$p")/../../../.." 2>/dev/null && pwd)" || true
+		if [ -n "$local_root" ]; then
+			shim="$local_root/bin/$name"
+			if [ -x "$shim" ] || [ -f "$shim" ]; then
+				printf '%s\n' "$shim"
+				return
+			fi
+		fi
+		if [ -x "$HOME/.local/bin/$name" ]; then
+			printf '%s\n' "$HOME/.local/bin/$name"
+			return
+		fi
+		;;
+	esac
+	printf '%s\n' "$p"
+}
+
+# 在 PATH 与各系统常见安装位置里找 codebuddy / cursor-agent，返回绝对路径。
+# 找不到则输出空行。不 follow 到版本目录，见 prefer_stable_agent。
+resolve_agent() {
+	local name="$1" cand p=""
+	if command -v "$name" >/dev/null 2>&1; then
+		p="$(command -v "$name")"
+	fi
+	if [ -z "$p" ]; then
+		for cand in \
+			"$HOME/.local/bin/$name" \
+			"$HOME/bin/$name" \
+			"/usr/local/bin/$name" \
+			"/opt/homebrew/bin/$name" \
+			"$HOME/.cursor/bin/$name" \
+			"$HOME/.codebuddy/bin/$name" \
+			"$HOME/Library/Application Support/Cursor/User/globalStorage/anysphere.cursor-agent-worker/agent-cli/.local/bin/$name" \
+			"$HOME/AppData/Local/cursor-agent/$name" \
+			"$HOME/AppData/Local/Programs/cursor/resources/app/resources/helpers/$name"; do
+			if [ -x "$cand" ] || [ -f "$cand" ]; then
+				p="$cand"
+				break
+			fi
+		done
+	fi
+	if [ -z "$p" ]; then
+		return 0
+	fi
+	p="$(prefer_stable_agent "$name" "$p")"
+	p="$(abs_path "$p")" || return 0
+	native_path "$p"
+}
+
+# 限时执行命令：stdout+stderr 打到标准输出，超时返回 124。
+# macOS 没有 GNU timeout，用后台进程 + sleep 轮询，兼容 bash 3.2。
+run_timed() {
+	local secs="$1" tmp pid waited=0 rc=0
+	shift
+	tmp="$(mktemp)" || return 1
+	(
+		"$@" >"$tmp" 2>&1
+	) &
+	pid=$!
+	while kill -0 "$pid" 2>/dev/null; do
+		if [ "$waited" -ge "$secs" ]; then
+			kill "$pid" 2>/dev/null || true
+			wait "$pid" 2>/dev/null || true
+			rm -f "$tmp"
+			return 124
+		fi
+		sleep 1
+		waited=$((waited + 1))
+	done
+	wait "$pid" || rc=$?
+	cat "$tmp" 2>/dev/null || true
+	rm -f "$tmp"
+	return "$rc"
+}
+
+# 判断 cursor-agent status 的 JSON 是否已登录。
+cursor_status_logged_in() {
+	local json="$1"
+	printf '%s' "$json" | grep -Eqi '"isAuthenticated"[[:space:]]*:[[:space:]]*true' && return 0
+	printf '%s' "$json" | grep -Eqi '"status"[[:space:]]*:[[:space:]]*"authenticated"' && return 0
+	return 1
+}
+
+# 检查 codebuddy：--version 能跑通即视为可用（登录态由首次任务暴露）。
+# 返回：0 可用，1 跑不起来。
+check_codebuddy() {
+	local bin="$1" out rc=0
+	out="$(run_timed 15 "$bin" --version)" || rc=$?
+	if [ "$rc" = 124 ]; then
+		warn "codebuddy --version 超时"
+		return 1
+	fi
+	if [ "$rc" != 0 ] || [ -z "$(printf '%s' "$out" | tr -d '[:space:]')" ]; then
+		warn "codebuddy 无法运行（--version 失败，exit ${rc}）"
+		return 1
+	fi
+	say "codebuddy 可运行：$(printf '%s' "$out" | head -n1)"
+	return 0
+}
+
+# 检查 cursor-agent：先 --version，再 status 看是否已单独登录（与 IDE 登录态无关）。
+# 设了 CURSOR_API_KEY / CURSOR_AUTH_TOKEN 也算通过。
+# 返回：0 可用，1 跑不起来，2 能跑但未登录。
+check_cursor() {
+	local bin="$1" out rc=0
+	out="$(run_timed 15 "$bin" --version)" || rc=$?
+	if [ "$rc" = 124 ]; then
+		warn "cursor-agent --version 超时"
+		return 1
+	fi
+	if [ "$rc" != 0 ] || [ -z "$(printf '%s' "$out" | tr -d '[:space:]')" ]; then
+		warn "cursor-agent 无法运行（--version 失败，exit ${rc}）"
+		return 1
+	fi
+	say "cursor-agent 可运行：$(printf '%s' "$out" | head -n1)"
+
+	if [ -n "${CURSOR_API_KEY:-}" ] || [ -n "${CURSOR_AUTH_TOKEN:-}" ]; then
+		say "cursor-agent：已设置 CURSOR_API_KEY / CURSOR_AUTH_TOKEN，跳过 login 检查"
+		return 0
+	fi
+
+	rc=0
+	out="$(run_timed 15 "$bin" status --format json)" || rc=$?
+	if [ "$rc" = 124 ]; then
+		warn "cursor-agent status 超时；请确认本机网络，并执行："
+		show_cmd "cursor-agent login"
+		return 2
+	fi
+	if [ "$rc" != 0 ]; then
+		warn "cursor-agent status 失败（exit ${rc}）。CLI 需单独登录，与 Cursor IDE 无关："
+		show_cmd "cursor-agent login"
+		return 2
+	fi
+	if cursor_status_logged_in "$out"; then
+		say "cursor-agent 已登录"
+		return 0
+	fi
+	warn "cursor-agent 未登录（桥接不读 IDE 登录态）。请执行："
+	show_cmd "cursor-agent login"
+	warn "或给服务设置环境变量 CURSOR_API_KEY"
+	return 2
+}
+
+# 对已解析到的两个 CLI 做可运行/登录检测，设置：
+#   codebuddy_ready / cursor_ready（0/1）
+probe_agents() {
+	codebuddy_ready=0
+	cursor_ready=0
+	local rc
+
+	if [ -n "${CODEBUDDY_ABS:-}" ]; then
+		if check_codebuddy "$CODEBUDDY_ABS"; then
+			codebuddy_ready=1
+		fi
+	else
+		warn "未找到 codebuddy"
+	fi
+
+	if [ -n "${CURSOR_ABS:-}" ]; then
+		rc=0
+		check_cursor "$CURSOR_ABS" || rc=$?
+		if [ "$rc" = 0 ]; then
+			cursor_ready=1
+		fi
+	else
+		warn "未找到 cursor-agent"
+	fi
+
+	if [ "$codebuddy_ready" = 0 ] && [ "$cursor_ready" = 0 ]; then
+		warn "目前没有可用的 agent CLI。服务能起来（扫码、Web 管理端可用），但跑不了任务。"
+		warn "装好并登录后再发消息：codebuddy，或 cursor-agent login（/ 设 CURSOR_API_KEY）。"
+	elif [ "$codebuddy_ready" = 0 ] && [ "$cursor_ready" = 1 ]; then
+		say "将使用已就绪的 cursor-agent（安装结束会写入绝对路径并切到 cursor）。"
+	elif [ "$codebuddy_ready" = 1 ] && [ "$cursor_ready" = 0 ]; then
+		if [ -n "${CURSOR_ABS:-}" ]; then
+			warn "cursor-agent 尚未就绪；默认仍可用 codebuddy。修好登录后，/driver cursor 即可切换。"
+		fi
+	else
+		say "两个 CLI 都可用。"
+	fi
+}
+
+write_agent_paths() {
+	local cb_path="" cu_path="" args=()
+	cb_path="$(resolve_agent codebuddy || true)"
+	cu_path="$(resolve_agent cursor-agent || true)"
+	if [ -z "$cb_path" ] && [ -z "$cu_path" ]; then
+		warn "未写入 agent 路径：本机仍未找到 codebuddy / cursor-agent。"
+		return 0
+	fi
+	if [ -n "$cb_path" ]; then
+		args+=(--codebuddy "$cb_path")
+		say "写入 codebuddy：${cb_path}"
+	fi
+	if [ -n "$cu_path" ]; then
+		args+=(--cursor "$cu_path")
+		say "写入 cursor-agent：${cu_path}"
+	fi
+	if ! "$(bin_path)" -home "$DATA_DIR" set-agent-paths "${args[@]}"; then
+		warn "写入 agent 绝对路径失败。可稍后手动执行（路径含空格时请加引号）："
+		show_cmd "$(bin_path) -home ${DATA_DIR} set-agent-paths --codebuddy <path> --cursor <path>"
+		return 0
+	fi
+}
+
 unit_name() {
 	if [ -n "$INSTANCE_NAME" ]; then
 		printf 'qqbot_bridge@%s' "$INSTANCE_NAME"
@@ -279,21 +517,17 @@ if [ -n "$GO_NEED" ] && [ "$(printf '%s\n%s\n' "$GO_NEED" "${GO_VERSION%%[-+ ]*}
 	die "Go 版本太旧（${GO_VERSION}），本项目需要 ${GO_NEED} 或更高：https://go.dev/dl/"
 fi
 
-have_codebuddy=0
-have_cursor=0
-if command -v codebuddy >/dev/null 2>&1; then
-	have_codebuddy=1
-	say "codebuddy：$(command -v codebuddy)"
+# 先按 PATH + 常见安装位置解析绝对路径，再探测能否真正跑起来（含 cursor 独立登录）。
+# 装完二进制后把可用路径写入配置。
+CODEBUDDY_ABS="$(resolve_agent codebuddy || true)"
+CURSOR_ABS="$(resolve_agent cursor-agent || true)"
+if [ -n "$CODEBUDDY_ABS" ]; then
+	say "codebuddy：${CODEBUDDY_ABS}"
 fi
-if command -v cursor-agent >/dev/null 2>&1; then
-	have_cursor=1
-	say "cursor-agent：$(command -v cursor-agent)"
+if [ -n "$CURSOR_ABS" ]; then
+	say "cursor-agent：${CURSOR_ABS}"
 fi
-if [ "$have_codebuddy" = 0 ] && [ "$have_cursor" = 0 ]; then
-	warn "没找到 codebuddy 或 cursor-agent。服务能起来（扫码、Web 管理端可用），但跑不了任务。装其中一个并登录后再发消息。"
-elif [ "$have_codebuddy" = 0 ]; then
-	warn "没找到 codebuddy。服务启动时会自动改用 cursor-agent。"
-fi
+probe_agents
 
 if [ ! -f "$REPO_DIR/go.mod" ]; then
 	die "没找到源码（${REPO_DIR}/go.mod），请在仓库目录里运行本脚本"
@@ -325,6 +559,9 @@ case ":$PATH:" in
 	show_cmd "export PATH=\"${PREFIX}:\$PATH\""
 	;;
 esac
+
+# 把本机 agent 的绝对路径写进配置，避免后台/systemd 的 PATH 找不到命令。
+write_agent_paths
 
 # ---- 可选：systemd 用户服务（仅 Linux）-----------------------------------
 if [ "$WITH_SERVICE" = 1 ]; then

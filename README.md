@@ -40,7 +40,7 @@ git clone <本仓库> qqbot_bridge && cd qqbot_bridge
 ./scripts/install.sh --service  # Linux：顺便装成 systemd 用户服务
 ```
 
-Windows 在 Git Bash 里运行 `bash scripts/install.sh`。脚本会检查 Go，以及 `codebuddy` / `cursor-agent` 是否在 PATH 里，再编译并装进 `~/.local/bin`（可用 `PREFIX=` 改）。已经有实例在跑时会询问要不要重启，需要你执行的命令各自单独占一行。`--service` 只在 Linux 上安装 systemd 用户单元。装完后按脚本打印的命令做初始化。
+Windows 在 Git Bash 里运行 `bash scripts/install.sh`。脚本会检查 Go，解析 `codebuddy` / `cursor-agent` 的绝对路径（PATH 与常见安装目录），并实际跑一次探测：`codebuddy --version`、`cursor-agent --version` 与 `cursor-agent status`（CLI 需单独 `cursor-agent login`，与 IDE 登录无关；有 `CURSOR_API_KEY` 也算通过）。然后编译装进 `~/.local/bin`（可用 `PREFIX=` 改），把路径写入 `config.yaml` 的 `agent.command` / `agent.commands`。已经有实例在跑时会询问要不要重启，需要你执行的命令各自单独占一行。`--service` 只在 Linux 上安装 systemd 用户单元。装完后按脚本打印的命令做初始化。
 
 不想用脚本也可以：
 
@@ -259,7 +259,10 @@ bind:
   whitelist: [ABCD1234]
 agent:
   driver: codebuddy      # 也可写 cursor，见「使用 Cursor」
-  command: codebuddy
+  command: codebuddy     # 安装脚本会改成绝对路径
+  commands:              # 按驱动存绝对路径；会话切换驱动时用
+    codebuddy: /usr/local/bin/codebuddy
+    cursor: /home/you/.local/bin/cursor-agent
   timeoutMinutes: 300   # 默认 30，长任务可调大
 push:
   maxMessages: 4
@@ -272,7 +275,8 @@ web:
 | `bind.appId` / `bind.secret` | 扫码绑定后自动写入 |
 | `bind.whitelist` | 允许使用的 openid 列表 |
 | `agent.driver` | 用哪个 agent 驱动，默认 `codebuddy`。本机找不到 `codebuddy` 命令时，启动会自动改成 `cursor` 并写回配置。也可直接写 `cursor`（需本机装好 `cursor-agent` 并登录，见「使用 Cursor」） |
-| `agent.command` | 驱动的可执行文件，默认随 driver 变化（`codebuddy` / `cursor-agent`） |
+| `agent.command` | 当前全局驱动的可执行文件；`install.sh` 会写成绝对路径，避免后台/systemd PATH 不全 |
+| `agent.commands` | 按驱动名（`codebuddy` / `cursor`）存绝对路径；会话切到另一驱动时用，不必依赖 PATH |
 | `agent.model` | 全局默认模型，留空跟随 CLI 默认；驱动不支持模型列表时 `/models` 会直接说明 |
 | `agent.permissionMode` | 默认 `bypassPermissions` |
 | `agent.timeoutMinutes` | 单轮任务超时，默认 30 分钟；跑长任务可以调大，如 300 |
